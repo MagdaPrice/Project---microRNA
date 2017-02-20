@@ -1,0 +1,632 @@
+---
+title: "miRNA Exploratory Analysis_Report"
+author: "Magda Price"
+date: "Tuesday, May 03, 2016"
+output: pdf_document
+---
+
+** We will work with log10 transformed RPKM (reads per kilboase million)
+
+Load libraries
+```{r load libraries, warning=F, message=FALSE}
+library(DESeq)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(reshape)
+library(gplots)
+library("RColorBrewer")
+options("scipen"=100, "digits"=4)
+library(matrixStats)
+library(limma)
+library(gridExtra)
+setwd("C:\\microRNA\\Chalk talk")
+```
+
+Data: miRNA data & design matrix
+```{r read miRNA data}
+# Load in 3 data files
+villi <- as.matrix(read.delim("C:\\microRNA\\01 - Input data\\01B_miRNA_placenta_newer_info.txt", 
+															row.names = 1))
+tissue <- as.matrix(read.delim("C:\\microRNA\\01 - Input data\\02B_allTissues_miRNA_Fetal_edited.txt", 
+															 row.names = 1))
+lung <- as.matrix(read.delim("C:\\microRNA\\01 - Input data\\02C_Last batch 10 lung fetal miRBase20_edited.txt", 
+									 row.names = 1))
+
+# Check out data
+str(villi) # 32 samples, 2576 microRNAs
+str(tissue) # 65 samples, 2576 microRNAs
+str(lung) # 10 samples, 2576 microRNAs
+
+# Merge together 3 datasets by row names (i.e. microRNA names)
+str(temp <- merge(tissue, lung, by = 0)) # 75 samples, 2576 microRNAs
+str(miRNA <- merge(temp, villi, by.x = "Row.names", by.y = 0)) # 107 samples, 2576 microRNAs
+rownames(miRNA) <- miRNA[,1]
+str(miRNA <- as.matrix(miRNA[,-1])) # 107 samples, 2576 microRNAs
+
+# Check out design matrix
+desMat <- read.delim("C:\\microRNA\\01 - Input data\\02A_desMat_allTissues.txt", row.names = 1)
+dim(desMat) # 107 samples, 20 variables
+head(desMat)
+rm(list = c("villi","tissue","lung", "temp"))
+```
+
+miRNA annotation (miRBase v20)
+```{r}
+anno <- read.delim("C:\\microRNA\\02 - annotation\\miRBase_v20_hsa.gff3_clean.txt")
+str(anno)
+sum(rownames(miRNA) %in% anno$name)
+sum(anno$name %in% rownames(miRNA))
+dim(anno.subset <- anno[anno$name %in% rownames(miRNA), ])
+```
+
+Row names of the design matrix should be the same as column names of the data
+```{r row & col names}
+colnames(miRNA)
+desMat$gscID
+all(colnames(miRNA) %in% desMat$gscID) # TRUE
+all(desMat$gscID %in% colnames(miRNA)) # TRUE, since both are TRUE, we know all samples are in both files
+
+# Reorder column names of data by design matrix
+miRNA <- miRNA[,as.character(desMat$gscID)]
+all(colnames(miRNA) == desMat$gscID) # TRUE, now all both files are in the same order
+
+# Rename samples by Robinson Lab ID
+colnames(miRNA) <- rownames(desMat)
+all(rownames(desMat) == colnames(miRNA))
+
+# Remove commercial sample
+remove <- "pool_lung"
+miRNA <- miRNA[ , !colnames(miRNA) %in% remove]
+desMat <- desMat[!rownames(desMat) %in% remove, ]
+
+dim(miRNA)
+dim(desMat)
+all(colnames(miRNA) == rownames(desMat)) # TRUE
+```
+
+Are design matrix variables correlated?
+```{r desMat cor}
+desMat.cor <- desMat[,c(4,6,8,9,10,11,12,13,14,17,18,19)] 
+desMat.cor[,1:ncol(desMat.cor)] <- as.numeric(as.character(unlist(desMat.cor[,1:ncol(desMat.cor)])))
+str(desMat.cor)
+
+grey<-colorRampPalette(brewer.pal(n=5,"RdYlBu"))
+
+plot.new()
+heatmap.2(cor(desMat.cor, use = "pairwise.complete.obs", method = "spearman"), 
+					cexCol = 1.2, cexRow = 1.2, col = grey, dendrogram = "both",
+				scale="none", margins=c(9,9), tracecol = "black")
+#lane is slightly more correlated with processing time
+#dev.off()
+
+str(desMat)
+desMat$trimester <- as.factor(desMat$trimester)
+```
+
+1Q: How many 0 values in the whole matrix?
+```{r Count 0s}
+(all0 <- sum(miRNA == 0))
+(totalSize <- nrow(miRNA) * ncol(miRNA))
+all0/totalSize * 100
+hist(miRNA, breaks = 50, xlab = "RPKM", main = "Histogram of RPKM")
+hist(log10(miRNA + 1), breaks = 50, xlab = "log10(RPKM +1)", main = "Histogram of log-transformed RPKM")
+```
+		1A:  189,962 0 values (69.57%) 
+
+2Q: How many miRNAs are not expressed in any sample? (N=915)
+```{r miRNAs not expr}
+notExp <- miRNA[rowSums(miRNA) <= 1,]
+dim(notExp) 
+nrow(notExp)/nrow(miRNA) * 100
+```
+		2A: 35.52% of miRNAs not expressed in any sample
+
+3Q: What is the tissue distribution of expression?
+
+		i) Create matrix of # individuals expressing/tissue
+```{r Expr by tissue}
+	agg.counts <- function(x, z, a){
+		y <- t(aggregate.data.frame(t(x),
+								by = list(z, a),
+								FUN = function(x) {
+									count = sum(x > 1)
+														 	}))
+	colnames(y) <- paste(y[1,], y[2,], sep="_")
+	y <- y[-c(1:2),]
+	rownames <- rownames(y)
+	y <- apply(y[,1:ncol(y)], 2, FUN = as.numeric)
+	rownames(y) <- rownames
+	return(y)
+	}
+	
+	count.ByTissue <- agg.counts(x = miRNA, z = desMat$tissue, a = desMat$trimester)
+	head(count.ByTissue)
+	
+	with(desMat, table(tissue, trimester))
+	v <- c(6,10,16,10,10,24,10,10,10)
+	names(v) <- c("chorionic villi_1", "brain_2", "chorionic villi_2", "kidney_2","liver_2", "lung_2", "muscle_2","spinal cord_2","chorionic villi_3")
+	v
+```
+
+		ii) Divide count matrix by number of samples/tissue 
+```{r Proportion expr by tissue}
+colSums(count.ByTissue > 1) / nrow(count.ByTissue)
+head(prop.ByTissue <- t(apply(count.ByTissue, 1, FUN = function(x) { x / as.vector(v)})))
+
+	## Sanity checks
+	head(count.ByTissue)
+	v
+
+	prop.ByTissue_melt <- melt(prop.ByTissue)
+	ggplot(prop.ByTissue_melt, aes(value, color = X2, fill = X2)) +
+	geom_density(alpha = 0.3, lwd = 1.5) +
+	labs(x = "proportion of individuals expressing")
+```
+Irina and I think that the distribution of expression in muscle looks strange, it doens't hit the 1.00 mark like the other tissues. Is this because one sample is an outlier?
+
+4Q: What is the number of miRNAs expressed per sample?
+```{r}
+desMat$expCount <- colSums(miRNA > 1)
+
+#i) Calculate mean and 3*SD of number of expressed miRNAs
+	stats <- 	as.data.frame(t(matrix(data =
+							c(rep(mean(desMat$expCount) - sd(desMat$expCount)*3, times = 7),
+							rep(mean(desMat$expCount), times = 7),
+							rep(mean(desMat$expCount) + sd(desMat$expCount)*3, times = 7)),
+							nrow = 3, ncol = 7, byrow = T, 
+							dimnames = list(c("low_sd3", "mean", "high_sd3"),
+															levels(desMat$tissue))
+							)))
+
+	head(stats)
+
+#ii) Plot the number of expressed miRNAs/sample 
+ggplot(desMat, aes(x = reorder(caseID, as.numeric(trimester)), y = expCount, group = tissue, fill = trimester)) +
+	geom_bar(stat = "identity", aes(fill = trimester)) +
+	theme_minimal() +
+	theme(axis.text.x = element_text(angle = 90, vjust = 0)) + 
+	facet_wrap( ~ tissue, nrow = 7) +
+	labs(x = "case ID", y = "Number of expressed miRNAs") +
+	ggtitle("Number of expressed miRNAs by sample") +
+	geom_hline(data = stats, aes(yintercept = low_sd3), lty = 2) +
+	geom_hline(data = stats, aes(yintercept = mean)) +
+	geom_hline(data = stats, aes(yintercept = high_sd3), lty = 2)
+	# line for mean - 3*sd
+```
+4A: FT42_mus has very low level of expressed miRNAs, maybe we should remove it?
+ - FT23_sc and NTD4_sc also have low levels of expressed miRNAs, though not quite as extreme as FT42_mus
+
+Expression heatmap
+```{r Expr heatmap}
+source("C:/450k analyses/MTHFR project/heatmap.3.R")
+brewer.pal(12, name = "Set3")
+
+col.trimester=gsub("3", "#FFED6F", gsub("2", "#CCEBC5", gsub("1","#BC80BD",desMat$trimester)))
+col.sex=gsub("FEMALE", "#CC0000", desMat$sex)
+col.sex=gsub("MALE","#0000CC", col.sex)
+col.tissue = gsub("brain", "#FB8072", 
+									gsub("chorionic villi", "#80B1D3", 
+											 gsub("kidney", "#FDB462", 
+											 		 gsub("liver", "#B3DE69", 
+											 		 		 gsub("lung", "#FCCDE5",
+											 		 		 		 gsub("muscle", "#FFFFB3",
+											 		 		 		 		 gsub("spinal cord", "#BEBADA", desMat$tissue)))))))
+
+clab=cbind(col.tissue, col.trimester, col.sex)
+clab
+colnames(clab)=c("Tissue", "Trimester", "Sex")
+
+
+#Define custom dist and hclust functions for use with heatmaps
+mydist=function(c) {dist(c,method="euclidian")}
+myclust=function(c) {hclust(c,method="average")}
+
+#Create heatmap using custom heatmap.3 source code loaded above
+#pdf(file="C:\\450k analyses\\MTHFR project\\CHGC 2015\\heatmap.pdf", width=10, height=10)
+main_title="" #Inter-sample correlation post processing (442,348 CpGs)
+par(cex.main=1)
+grey<-colorRampPalette(brewer.pal(n=9,"Greys"))
+
+heatmap.3(log10(miRNA+1),hclustfun=myclust, distfun=mydist,na.rm = TRUE, scale="none", 
+          dendrogram="both", margins=c(6,12), Rowv=TRUE, Colv=TRUE,  
+          symbreaks=FALSE, key=TRUE, symkey=FALSE, density.info="none", 
+          trace="none", ColSideColors=clab, 
+          main=main_title, labCol=rownames(desMat), 
+          labRow="",  col=grey, ColSideColorsSize=5,
+          KeyValueName="log10(exp+1)",keysize=1.2,
+          cexCol=0.8)
+legend("topright",legend=c("Female","Male",
+                     " ","1st T","2nd T","Term",
+													 " ", "brain","ch. villi", "kid", "liver", "lung", "musc","sc"
+                     ),
+       fill=c("#CC0000","#0000CC",
+              "white","#BC80BD","#CCEBC5","#FFED6F",
+              "white", "#FB8072","#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5", "#FFFFB3", "#BEBADA"), 
+       border=FALSE, bty="n", y.intersp = 0.9, cex=0.9)
+```
+- FT23_sc, NTD4_sc, FT42_mus and FT25_lung don't cluster with their respective tissues, all, except for
+FT25_lung had much less miRNA expression in comparison to all other samples (see previous bar graph)
+- Chorionic villi is somewhat clustered by trimester, but there is some mixing 
+- Should PL168_cv also be removed? it's branch is higher up on tree then the branches between two tissues
+
+```{r sex clustering}
+count(anno.subset$chr == "chrX")
+count(anno.subset$chr == "chrY")
+anno.sex <- anno.subset[anno.subset$chr == "chrX" | anno.subset$chr == "chrY", ] #169 sex chr miRNAs
+length(unique(anno.sex$name)) #153 unique sex chr miRNAs
+miRNA.sex <- miRNA[rownames(miRNA) %in% anno.sex$name,]
+
+heatmap.3(log10(miRNA.sex+1),hclustfun=myclust, distfun=mydist,na.rm = TRUE, scale="none", 
+          dendrogram="both", margins=c(6,12), Rowv=TRUE, Colv=TRUE,  
+          symbreaks=FALSE, key=TRUE, symkey=FALSE, density.info="none", 
+          trace="none", ColSideColors=clab, 
+          main=main_title, labCol=rownames(desMat), 
+          labRow="",  col=grey, ColSideColorsSize=5,
+          KeyValueName="log10(exp+1)",keysize=1.2,
+          cexCol=0.8)
+legend("topright",legend=c("Female","Male",
+                     " ","1st T","2nd T","Term",
+													 " ", "brain","ch. villi", "kid", "liver", "lung", "musc","sc"
+                     ),
+       fill=c("#CC0000","#0000CC",
+              "white","#BC80BD","#CCEBC5","#FFED6F",
+              "white", "#FB8072","#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5", "#FFFFB3", "#BEBADA"), 
+       border=FALSE, bty="n", y.intersp = 0.9, cex=0.9)
+```
+- there isn't really any seperation of sex based on miRNA expression from the sex chromosomes
+
+Principal component analysis
+```{r PCA}
+sum(is.na(miRNA)) # 0 
+source("C:/450k analyses/MTHFR project/heat.scree_allPCs.R")
+source("C:/450k analyses/MTHFR project/heat.scree.R")
+
+colnames(desMat)
+meta_categorical <- desMat[,c(4,6,9,10,12,13,14,17,18,19)] # input column numbers in meta that contain categorical variables
+meta_categorical$trimester <- factor(meta_categorical$trimester)
+meta_categorical$Lane <- factor(meta_categorical$Lane)
+meta_continuous <- desMat[,c(8,11,14)] # input column numbers in meta that contain continuous variables
+meta_continuous$Lane <- as.numeric(meta_continuous$Lane)
+#colnames(meta_categorical) <- c("tissue", "condition", "trimester", "Library","Flowcell", "GSC.Batch","Alignment.Batch", "Trimester", "Sex")
+#colnames(meta_continuous) <- c("Lane", "GA", "Processing Time")
+
+
+#1. prcomp - centre in function
+PCA1 <- prcomp(log10(miRNA + 1), center=T, scale=F)
+Loadings1 <- as.data.frame(unclass(PCA1$rotation))
+vars1 <- PCA1$sdev^2
+Importance1 <- vars1/sum(vars1)
+title  <- "1) prcomp -- center in function"
+heat_scree_plot(Loadings1, Importance1, top = title)
+
+#5. prcomp - pre-center CpGs & samples
+center_row <- t(scale(t(log10(miRNA + 1)), scale=F, center=T)) #center rows
+PCA5 <- prcomp(center_row, center=T, scale=F)
+Loadings5 <- as.data.frame(unclass(PCA5$rotation))
+vars5 <- PCA5$sdev^2
+Importance5 <- vars5/sum(vars5)
+title  <- "5) prcomp -- pre-center CpGs & samples"
+heat_scree_plot_noAdj(Loadings5, Importance5, top = title)
+```
+
+PCA graphs
+```{r}
+pcaDes <- cbind(desMat, PCA5$rotation[rownames(desMat), 1:12])
+head(pcaDes)
+plot1 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = tissue, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot2 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = tissue, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot3 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = tissue, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot4 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = condition, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot5 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = condition, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot6 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = condition, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot7 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = modeLabour, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot8 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = modeLabour, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot9 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = modeLabour, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot10 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = log2(processingTime), label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot11 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = log2(processingTime), label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot12 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = log2(processingTime), label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot13 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = sex, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot14 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = sex, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot15 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = sex, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot16 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = libraryID, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot17 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = libraryID, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot18 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = libraryID, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot19 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = flowCell, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot20 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = flowCell, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot21 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = flowCell, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot22 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = Lane, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot23 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = Lane, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot24 <- ggplot(pcaDes, aes(x = PC5, y = PC6, color = Lane, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+
+grid.arrange(plot1, plot2, plot3, plot13, plot14, plot15, plot4, plot5, plot6, plot7, plot8, plot9, ncol = 3)
+grid.arrange(plot10, plot11, plot12, plot16, plot17, plot18, plot19, plot20, plot21, plot22, plot23, plot24, ncol=3)
+
+
+plot1 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = tissue, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot2 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = tissue, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot3 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = tissue, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot4 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = condition, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot5 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = condition, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot6 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = condition, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot7 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = modeLabour, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot8 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = modeLabour, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot9 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = modeLabour, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot10 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = log2(processingTime), label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot11 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = log2(processingTime), label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot12 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = log2(processingTime), label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot13 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = sex, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot14 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = sex, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot15 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = sex, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot16 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = libraryID, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot17 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = libraryID, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot18 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = libraryID, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot19 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = flowCell, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot20 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = flowCell, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot21 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = flowCell, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot22 <- ggplot(pcaDes, aes(x = PC7, y = PC8, color = Lane, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot23 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = Lane, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+plot24 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = Lane, label = rownames(desMat))) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4)
+
+grid.arrange(plot1, plot2, plot3, plot13, plot14, plot15, plot4, plot5, plot6, plot7, plot8, plot9, ncol = 3)
+grid.arrange(plot10, plot11, plot12, plot16, plot17, plot18, plot19, plot20, plot21, plot22, plot23, plot24, ncol=3)
+```
+
+
+ 
+ 
+ 
+ 
+ **08.J Volcano plots**
+```{r 08.J VILLI volcano plots - all probes}
+processingTop$FDR<- as.factor(processingTop$adj.P.Val < 0.05)
+head(processingTop)
+
+#pdf(file="C:\\Thesis\\Chapter 5\\Figures\\volcano_677.pdf",width=3.5, height=3.5)
+ggplot(processingTop.all.80, aes(x=logFC, y=-log10(adj.P.Val)),) +
+	geom_point(shape=19, alpha=0.5, size=3, color = "slategray") + 
+	theme_bw() +
+	geom_point(data = subset(processingTop.all.80, adj.P.Val <= 0.05),
+						 aes(x=logFC, y=-log10(adj.P.Val)),shape=19, alpha=0.5, size=3, color = "red") + 
+	geom_point(data = processingTop.all.80[rownames(processingTop.all.80) %in% 
+																									rownames(trimester.all.FDR05),],
+						 aes(x=logFC, y=-log10(adj.P.Val)),shape=19, alpha=0.5, size=3, color = "blue") +
+	geom_hline(yintercept=(-log10(0.05)), color="slategray", size=.3) +
+	coord_cartesian(xlim = c(-0.02, 0.02)) +
+  ylab("-log10(adjusted P.Value)") + 
+  xlab("log2 fold change")+
+  ggtitle("Change in microRNA expression with processing time" )+
+  annotate("text", -0.02,(-log10(0.045)) ,label = "FDR <0.05", size=3)
+ # dev.off()
+```
+
+
+
+
+
+# What is expressed in all tissues & all samples?
+head(prop.ByTissue[,1])
+head(prop.ByTissue[,1] == 1)
+head(which(prop.ByTissue[,1] == 1))
+
+
+head(prop.ByTissue[,2], n=20L)
+head(prop.ByTissue[,2] == 0, n=20L)
+head(which(prop.ByTissue[,2] == 0), n=20L)
+
+str(names(which(prop.ByTissue[,1] == 1)))
+dimnames(prop.ByTissue)[[2]]
+#[1] "chorionic villi_1" "brain_2"           "chorionic villi_2" "kidney_2"          "liver_2"           "lung_2"           
+#[7] "muscle_2"          "spinal cord_2"     "chorionic villi_3 
+
+#141 expressed in all tissues, all samples
+length(common.all <- Reduce(intersect, list(names(which(prop.ByTissue[,1] == 1)), names(which(prop.ByTissue[,2] == 1)),
+																	 names(which(prop.ByTissue[,3] == 1)), names(which(prop.ByTissue[,4] == 1)),
+																	 names(which(prop.ByTissue[,5] == 1)),names(which(prop.ByTissue[,6] == 1)),
+																	 names(which(prop.ByTissue[,7] == 1)),names(which(prop.ByTissue[,8] == 1)),
+																	 names(which(prop.ByTissue[,9] == 1))
+																	 )))
+
+#0 expressed in somatic tissue, all samples, no chorionic villi
+length(common.somatic <- Reduce(intersect, list(names(which(prop.ByTissue[,1] == 0)), names(which(prop.ByTissue[,2] == 1)),
+																	 names(which(prop.ByTissue[,3] == 0)), names(which(prop.ByTissue[,4] == 1)),
+																	 names(which(prop.ByTissue[,5] == 1)),names(which(prop.ByTissue[,6] == 1)),
+																	 names(which(prop.ByTissue[,7] == 1)),names(which(prop.ByTissue[,8] == 1)),
+																	 names(which(prop.ByTissue[,9] == 0))
+																	 )))
+
+#0 expressed only in 1st trimester villi
+length(common.somatic <- Reduce(intersect, list(names(which(prop.ByTissue[,1] > 0.5)), names(which(prop.ByTissue[,2] == 0)),
+																	 names(which(prop.ByTissue[,3] == 0)), names(which(prop.ByTissue[,4] == 0)),
+																	 names(which(prop.ByTissue[,5] == 0)),names(which(prop.ByTissue[,6] == 0)),
+																	 names(which(prop.ByTissue[,7] == 0)),names(which(prop.ByTissue[,8] == 0)),
+																	 names(which(prop.ByTissue[,9] == 0))
+																	 )))			
+ 
+
+length(common.somatic <- Reduce(intersect, list(names(which(prop.ByTissue[,1] == 0)), names(which(prop.ByTissue[,2] == 0)),
+																	 names(which(prop.ByTissue[,3] > 0.5)), names(which(prop.ByTissue[,4] == 0)),
+																	 names(which(prop.ByTissue[,5] == 0)),names(which(prop.ByTissue[,6] == 0)),
+																	 names(which(prop.ByTissue[,7] == 0)),names(which(prop.ByTissue[,8] == 0)),
+																	 names(which(prop.ByTissue[,9] == 0))
+																	 )))	
+
+length(common.somatic <- Reduce(intersect, list(names(which(prop.ByTissue[,1] == 0)), names(which(prop.ByTissue[,2] == 0)),
+																	 names(which(prop.ByTissue[,3] == 0)), names(which(prop.ByTissue[,4] == 0)),
+																	 names(which(prop.ByTissue[,5] == 0)),names(which(prop.ByTissue[,6] == 0)),
+																	 names(which(prop.ByTissue[,7] == 0)),names(which(prop.ByTissue[,8] == 0)),
+																	 names(which(prop.ByTissue[,9] > 0.5))
+																	 )))
+```
+
+lung limma
+```{r lung limma}
+dim(modMat.lung <- desMat[desMat$tissue == "lung" ,])
+modMat.lung$flowCell <- factor(modMat.lung$flowCell)
+modMat.lung$condition <- factor(modMat.lung$condition)
+modMat.lung$libraryID <- factor(modMat.lung$libraryID)
+modMat.lung$Lane <- factor(modMat.lung$Lane)
+
+#####desMat correlation
+lung.cor <- modMat.lung[,c(6,8,10,11,12,13,14)] 
+lung.cor[,1:ncol(lung.cor)] <- as.numeric(as.character(unlist(lung.cor[,1:ncol(lung.cor)])))
+
+plot.new()
+RdYlBu<-colorRampPalette(brewer.pal(n=5,"RdYlBu"))
+heatmap.2(cor(lung.cor, use = "pairwise.complete.obs", method = "spearman"), 
+					cexCol = 0.9, cexRow = 0.9, col = RdYlBu, dendrogram = "both",
+				scale="none", margins=c(5,10), tracecol = "black")
+
+#####PCA
+source("C:/450k analyses/MTHFR project/heat.scree.R")
+
+colnames(modMat.lung)
+meta_categorical <- modMat.lung[,c(6,10,12,13,17,18,19,21)] # input column numbers in meta that contain categorical variables
+meta_continuous <- modMat.lung[,c(8,11,14)] # input column numbers in meta that contain continuous variables
+meta_continuous$Lane <- as.numeric(meta_continuous$Lane)
+
+#1. prcomp - centre in function
+PCA1 <- prcomp(log10(miRNA[,colnames(miRNA) %in% rownames(modMat.lung)] + 1), center=T, scale=F)
+Loadings1 <- as.data.frame(unclass(PCA1$rotation))
+vars1 <- PCA1$sdev^2
+Importance1 <- vars1/sum(vars1)
+title  <- "1) prcomp -- center in function"
+heat_scree_plot(Loadings1, Importance1, top = title)
+
+#####limma
+
+lungProp <- prop.ByTissue[prop.ByTissue[,"lung_2"] >= 0.5,]
+
+(mod.lung <- model.matrix(~ 0 + processingTime + flowCell + condition, modMat.lung))
+dmFit.lung <- lmFit(log10(miRNA[rownames(miRNA) %in% rownames(lungProp),
+																colnames(miRNA) %in% rownames(modMat.lung)] + 1), mod.lung)
+ebFit.lung<-eBayes(dmFit.lung)
+
+		# miRNAs where something changes with processing time 
+		processingTop.lung<- topTable(ebFit.lung, coef = grep("processingTime", colnames(coef(ebFit.lung))), adjust.method="BH", number=Inf)
+		head(processingTop.lung)
+		hist(processingTop.lung$P.Value, breaks = 100)
+```
+
+
+```{r, eval = F}
+# Cell means paramaterization
+modMat <- desMat
+modMat$trimester <- as.factor(modMat$trimester)
+
+(mod.2<- model.matrix(~ 0 + trimester + Sex + processingTime + libraryID, modMat))
+dmFit.2 <- lmFit(log10(Exp + 1), mod.2)
+(contrast.matrix.2 <- makeContrasts(sex = SexMALE, 
+																		T1_T2 = trimester1 - trimester2,
+																		T1_T3 = trimester1 - trimester3,
+																		T3_T2 = trimester3 - trimester2,
+                               			levels=colnames(mod.2)))
+fitContrasts.2 <- contrasts.fit(dmFit.2, contrast.matrix.2)
+ebFit.2<-eBayes(fitContrasts.2)
+
+		# piRNAs where sex is significant
+		sex.2 <- topTable(ebFit.2, coef = "sex", adjust.method="BH", number=Inf)
+		head(sex.2)
+		hist(sex.2$P.Value, breaks = 100)
+
+		# piRNAs where something changes betweeb trimesters 
+		All.T <- topTable(ebFit.2, coef = grep("_T", colnames(coef(ebFit.2))), adjust.method="BH", number=Inf)
+		head(All.T)
+		hist(All.T$P.Value, breaks = 100)
+```
