@@ -2,10 +2,10 @@
 title: "piRNA processing"
 author: "Magda Price"
 date: "Thursday, April 07, 2016"
-output: html_document
+output: pdf_document
 ---
 
-```{r load libraries, message = F}
+```{r load libraries}
 #source("http://www.bioconductor.org/biocLite.R")
 #biocLite("DESeq")
 library(DESeq)
@@ -22,12 +22,12 @@ library(gridExtra)
 ```
 
 ```{r read data}
-piRNA <- read.delim("Y:\\RobinsonLab\\Magda\\Project---microRNA\\01 - Input data\\01C_Placenta-piRNA-expression_edited.txt", row.names = 1)
+piRNA <- read.delim("C:\\microRNA\\01 - Input data\\Placenta-piRNA-expression_edited.txt", row.names = 1)
 head(piRNA)
 colnames(piRNA)
 piRNA <- as.matrix(piRNA)
 
-desMat <- read.delim("Y:\\RobinsonLab\\Magda\\Project---microRNA\\01 - Input data\\01A_desMat_placenta_controls.txt", row.names = 1)
+desMat <- read.delim("C:\\microRNA\\01 - Input data\\desMat_controls.txt", row.names = 1)
 head(desMat)
 rownames(desMat)
 
@@ -37,8 +37,8 @@ dim(piRNA) # 6,029 piRNAs, 26 samples
 ```
 
 ```{r}
-corMat <- desMat[,c(1,10,11,12)] # desMat input file changed since I did this. I think, gibven below, that originally I was interested in LibraryID (Tech1), trimester, sex and gestational age (since this was already a number?)
-corMat$LibraryID <- as.numeric(corMat$LibraryID)
+corMat <- desMat[,c(1,8,9,10)]
+corMat$Tech1 <- as.numeric(corMat$Tech1)
 corMat$trimester <- as.numeric(corMat$trimester)
 corMat$Sex <- as.numeric(corMat$Sex)
 
@@ -125,10 +125,10 @@ col.trimester=gsub("3", "#EDCA0C", gsub("2", "#BC8F8F", gsub("1","#5f9EA0",desMa
 col.sex=gsub("FEMALE", "#FF7352", desMat$Sex)
 col.sex=gsub("MALE","#72CBEB", col.sex)
 row.tech1=gsub("MX1303", "#D9D9D9",gsub("MX1307", "#F7F7F7", gsub("MX1310", "#BDBDBD", gsub("MX1355", "#737373",
-																				gsub("MX1356", "#525252", gsub("MX1356", "#969696", gsub("MX1357", "#252525", desMat$LibraryID)))))))
+																				gsub("MX1356", "#525252", gsub("MX1356", "#969696", gsub("MX1357", "#252525", desMat$Tech1)))))))
 
-row.tech2=gsub("C5JC1ACXX", "#F7F7F7", gsub("C5JC4ACXX", "#252525", gsub("C6RGTANXX", "#D9D9D9", desMat$Flowcell)))
-#from this, I know that Tech1 = LibraryID, Tech2=Flowcell
+row.tech2=gsub("C5JC1ACXX", "#F7F7F7", gsub("C5JC4ACXX", "#252525", gsub("C6RGTANXX", "#D9D9D9", desMat$Tech2)))
+
 
 clab=cbind(row.tech1, row.tech2, col.trimester, col.sex)
 clab
@@ -282,9 +282,9 @@ ggplot(datMelt, aes(x = reorder(ID_Rob, as.numeric(Sex)), y = value)) +
 	scale_fill_manual(values = c("red", "dodgerblue3"), labels = c("Female", "Male"), name = "") +
 	theme(legend.justification = c(0, 1), legend.position = c(0, 1))
 
-ggplot(datMelt, aes(x = reorder(ID_Rob, as.numeric(LibraryID)), y = value)) +
+ggplot(datMelt, aes(x = reorder(ID_Rob, as.numeric(Tech1)), y = value)) +
 	theme_minimal() +
-	geom_bar(stat = "identity", aes(fill = as.factor(LibraryID))) +
+	geom_bar(stat = "identity", aes(fill = as.factor(Tech1))) +
 	facet_wrap( ~ X2, nrow = 2) +
 	theme(axis.text.x = element_text(angle = 90, vjust = 0)) + 
 	#scale_x_discrete(labels = desMat$ID_Rob, name = "") +
@@ -293,9 +293,9 @@ ggplot(datMelt, aes(x = reorder(ID_Rob, as.numeric(LibraryID)), y = value)) +
 	theme(legend.justification = c(0, 1), legend.position = c(0, 1)) +
 	ggtitle("Stats by technical factor 1")
 
-ggplot(datMelt, aes(x = reorder(ID_Rob, as.numeric(Flowcell)), y = value)) +
+ggplot(datMelt, aes(x = reorder(ID_Rob, as.numeric(Tech2)), y = value)) +
 	theme_minimal() +
-	geom_bar(stat = "identity", aes(fill = as.factor(Flowcell))) +
+	geom_bar(stat = "identity", aes(fill = as.factor(Tech2))) +
 	facet_wrap( ~ X2, nrow = 2) +
 	theme(axis.text.x = element_text(angle = 90, vjust = 0)) + 
 #	scale_x_discrete(labels = desMat$ID_Rob, name = "") +
@@ -317,14 +317,99 @@ ggplot(datMelt, aes(x = reorder(ID_Rob, ProcessingTime), y = value)) +
 ```
 
 
+*%*%*%* To do: Compare PCAs why one over the other?
+
+## PCA
+sum(is.na(Exp)) 
+NoNA.scaled <- t(scale(t(log10(Exp+1)), scale=F, center=T))
+
+PCA<-prcomp(NoNA.scaled, center=F, scale=F)
+Loadings<-as.data.frame(unclass(PCA$rotation))
+vars<-PCA$sdev^2
+Importance<-vars/sum(vars)
+
+pcaDes <- cbind(desMat, PCA$rotation[rownames(desMat), 1:14])
+head(pcaDes)
+plot1 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = Sex, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = as.factor(trimester)))
+plot2 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = Sex, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = as.factor(trimester)))
+plot3 <- ggplot(pcaDes, aes(x = PC5, y = PC8, color = Sex, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = as.factor(trimester)))
+plot4 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = Sex, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = as.factor(trimester)))
+plot5 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = Sex, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = as.factor(trimester)))
+plot6 <- ggplot(pcaDes, aes(x = PC13, y = PC14, color = Sex, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = as.factor(trimester)))
+grid.arrange(plot1, plot2, plot3, plot4, plot5, plot6, ncol=3)
+
+plot1 <- ggplot(pcaDes, aes(x = PC1, y = PC2, color = ProcessingTime, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = Tech1))
+plot2 <- ggplot(pcaDes, aes(x = PC3, y = PC4, color = ProcessingTime, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = Tech1))
+plot3 <- ggplot(pcaDes, aes(x = PC5, y = PC8, color = ProcessingTime, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = Tech1))
+plot4 <- ggplot(pcaDes, aes(x = PC9, y = PC10, color = ProcessingTime, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = Tech1))
+plot5 <- ggplot(pcaDes, aes(x = PC11, y = PC12, color = ProcessingTime, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = Tech1))
+plot6 <- ggplot(pcaDes, aes(x = PC13, y = PC14, color = ProcessingTime, label = ID_Rob)) +
+	geom_text(size = 4, hjust=0, vjust=0) +
+	geom_point(size = 4, aes(shape = Tech1))
+grid.arrange(plot1, plot2, plot3, plot4, plot5, plot6, ncol=3)
+
+
+source("C:/450k analyses/MTHFR project/heat.scree.R")
+meta <- merge(pcaDes, t(col.statsLog), by = 0)
+meta_categorical<-meta[,c(2,3,11)]  # input column numbers in meta that contain categorical variables
+meta_continuous<-meta[,c(9,10,12,28,29,30,31,32,33)] # input column numbers in meta that contain continuous variables
+colnames(meta_categorical)<-c( "Tech1","Tech2","Sex")
+colnames(meta_continuous)<-c("GA","trimester", "Processing Time", "count", "mean" ,          "median"  ,      
+ "max"     ,       "sd" ,            "mad")
+
+#Apply function on PCA results, pulls in the meta data and beta values from above
+heat_scree_plot(Loadings, Importance)
+	# PC1 associated with ProcessingTim
+	# PC2 associated with Tech1
+
+#t(t(pca$x %*% t(pca$rotation)) + pca$center)
+PC1.recon <- PCA$x[,1] %*% t(PCA$rotation[,1]) + PCA$center
+PC2.recon <- PCA$x[,2] %*% t(PCA$rotation[,2]) + PCA$center
+
+
+trunc <- PCA$x[,1:2] %*% t(PCA$rotation[,1:2])
+trunc <- scale(trunc, center = FALSE , scale=1/PCA$scale)
+trunc <- scale(trunc, center = -1 * PCA$center, scale=FALSE)
+
+#and add the center (and re-scale) back to data
+if(PCA$scale != FALSE){
+    	trunc <- scale(trunc, center = FALSE , scale=1/PCA$scale)
+    }
+    if(PCA$center != FALSE){
+    trunc <- scale(trunc, center = -1 * PCA$center, scale=FALSE)
+}
+dim(trunc); dim(Xt)
+
 ```{r}
-source("Y:\\RobinsonLab\\Magda\\Project---microRNA\\heat.scree.R")
+source("C:/450k analyses/MTHFR project/heat.scree.R")
 
 desMat$trimester.2 <- as.factor(desMat$trimester)
 
-meta_categorical<-desMat[,c(1,2,15,12)]  # input column numbers in meta that contain categorical variables
-meta_continuous<-desMat[,c(10,11,13)] # input column numbers in meta that contain continuous variables
-colnames(meta_categorical)<-c( "LibraryID","FlowCell","Sex", "Trimester (factor)")
+meta_categorical<-desMat[,c(1,2,10,13)]  # input column numbers in meta that contain categorical variables
+meta_continuous<-desMat[,c(8,9,11)] # input column numbers in meta that contain continuous variables
+colnames(meta_categorical)<-c( "Tech1","Tech2","Sex", "Trimester (factor)")
 colnames(meta_continuous)<-c("GA","Trimester (numeric)", "Processing Time")
 
 princomp <- princomp(log(Exp+1))
@@ -367,9 +452,28 @@ sum(topTable.Exp26$P.Value > 0.1)
 (61/6029)*100
 
 ```
+# Cell means paramaterization
+(mod.3<- model.matrix(~ 0 + trimester + Sex + ProcessingTime, modMat))
+dmFit.3 <- lmFit(log10(Exp + 1), mod.3)
+(contrast.matrix.3 <- makeContrasts(sex = SexMALE, 
+																		T1_T2 = trimester1 - trimester2,
+																		T1_T3 = trimester1 - trimester3,
+																		T3_T2 = trimester3 - trimester2,
+                               			levels=colnames(mod.3)))
+fitContrasts.3 <- contrasts.fit(dmFit.3, contrast.matrix.3)
+ebFit.3<-eBayes(fitContrasts.3)
 
+		# piRNAs where sex is significant
+		sex.3 <- topTable(ebFit.3, coef = "sex", adjust.method="BH", number=Inf)
+		head(sex.3)
+		hist(sex.3$P.Value, breaks = 100)
 
-```{r Hits mod1, eval = F}
+		# piRNAs where something changes betweeb trimesters 
+		All.T.3 <- topTable(ebFit.3, coef = grep("_T", colnames(coef(ebFit.3))), adjust.method="BH", number=Inf)
+		head(All.T.3)
+		hist(All.T.3$P.Value, breaks = 100)
+
+```{r Hits mod1}
 dim(All.T[All.T$adj.P.Val <= 0.05,])
 topGA <- All.T[All.T$adj.P.Val <= 0.05,]
 		datGA <- Exp[rownames(All.T[All.T$adj.P.Val <= 0.05,]),]
@@ -427,10 +531,94 @@ ggplot(hitsGA.melt, aes(x = piRNA, y = value, group = variable, color = variable
 
 
 
-hist(fold$T1.T2, breaks = 30, xlim = c(0,3))
-hist(fold$T3.T2, breaks = 30, xlim = c(0,3))
-hist(fold$T1.T3, breaks = 30, xlim = c(0,3))
+hist(hitsGA$T1.T2, breaks = 30, xlim = c(0,3))
+hist(hitsGA$T3.T2, breaks = 30, xlim = c(0,3))
+hist(hitsGA$T1.T3, breaks = 30, xlim = c(0,3))
 ```
+
+
+
+#All data
+
+#Reference paramaterization
+(mod<- model.matrix(~ trimester + Sex + Comp.1 + Comp.2, modMat))
+dmFit <- lmFit(log10(Exp + 1), mod)
+colnames(coef(dmFit))
+ebFit<-eBayes(dmFit)
+
+		# piRNAs where sex is significant 
+		sex <- topTable(ebFit, coef = "SexMALE", adjust.method="BH", number=Inf)
+		head(sex)
+		hist(sex$P.Value, breaks = 100)
+
+		# piRNAs where trimester is significant 
+		GA <- topTable(ebFit, coef = grep("trimester", colnames(coef(ebFit))), adjust.method="BH", number=Inf)
+		head(GA)
+		hist(GA$P.Value, breaks = 100)
+		
+		# piRNAs where T2 is significant (STAT540 - Lecture 10, pg 55)
+		T1_T2 <- topTable(ebFit, coef = "trimester2", adjust.method="BH", number=Inf)
+		head(T1_T2)
+		hist(T2$P.Value, breaks = 100)
+		
+		# piRNAs where T3 significant (en masse) (STAT540 - Lecture 10, pg 55)
+		T3 <- topTable(ebFit, coef = "as.factor(trimester)3", adjust.method="BH", number=Inf)
+		head(T3)
+		hist(T3$P.Value, breaks = 100)
+
+
+# Cell means paramaterization - Sex only
+(mod.3<- model.matrix(~ 0 + Sex + Comp.1 + Comp.2, modMat))
+dmFit.3 <- lmFit(log10(Exp + 1), mod.3)
+(contrast.matrix.3 <- makeContrasts(sex = SexMALE - SexFEMALE, 
+																		levels=colnames(mod.3)))
+fitContrasts.3 <- contrasts.fit(dmFit.3, contrast.matrix.3)
+ebFit.3<-eBayes(fitContrasts.3)
+
+		# piRNAs where sex is significant - this is NOT THE SAME as reference paramterization
+		sex.3 <- topTable(ebFit.3, coef = "sex", adjust.method="BH", number=Inf)
+		head(sex.3)
+		hist(sex.3$P.Value, breaks = 100)
+
+
+
+
+From Limma topTable:
+In general, the adjusted p-values returned by adjust.method="BH" remain valid as FDR bounds only when the genes remain sorted by p-value. Resorting the table by log-fold-change can increase the false discovery rate above the nominal level for genes at the top of resorted table
+
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# 1. Residual standard error
+mod.rse <- dmFit$sigma
+hist(mod.rse)
+
+# 2. R-Squared
+sst <- rowSums(log10(Exp + 1)^2)
+ssr <- sst-dmFit$df.residual * dmFit$sigma^2
+mod.rs <- (ssr/sst)
+hist(mod.rs)
+
+
+
 
 
 ```{r}
@@ -452,17 +640,17 @@ hist(mod_sm.rs)
 
 
 # piRNAs where sex is significant 
-sex <- topTable(ebFit_sm, coef = "SexMALE", adjust.method="BH", number=Inf)
+sex <- topTable(ebFit, coef = "SexMALE", adjust.method="BH", number=Inf)
 head(sex)
 hist(sex$P.Value, breaks = 100)
 
 # piRNAs where T2 is significant (STAT540 - Lecture 10, pg 55)
-T2 <- topTable(ebFit_sm, coef = "as.factor(trimester)2", adjust.method="BH", number=Inf)
+T2 <- topTable(ebFit, coef = "as.factor(trimester)2", adjust.method="BH", number=Inf)
 head(T2)
 hist(T2$P.Value, breaks = 100)
 
 # piRNAs where T3 significant (en masse) (STAT540 - Lecture 10, pg 55)
-T3 <- topTable(ebFit_sm, coef = "as.factor(trimester)3", adjust.method="BH", number=Inf)
+T3 <- topTable(ebFit, coef = "as.factor(trimester)3", adjust.method="BH", number=Inf)
 head(T3)
 hist(T3$P.Value, breaks = 100)
 
@@ -489,7 +677,7 @@ head(nor.counts)
 piRNA_GA <- Exp[nor.counts[,1] <= .17 | nor.counts[,2] <= .20 | nor.counts[,3] <= .20,] 
 dim(piRNA_GA) #187
 
-(mod <- model.matrix(~ as.factor(trimester) + Sex + LibraryID, desMat))
+(mod <- model.matrix(~ as.factor(trimester) + Sex + Tech1, desMat))
 dmFit <- lmFit(log10(piRNA_GA + 1), mod)
 colnames(coef(dmFit))
 ebFit<-eBayes(dmFit)
@@ -523,7 +711,7 @@ head(nor.counts.sex)
 piRNA_sex <- Exp[nor.counts.sex[,1] <= .75 | nor.counts.sex[,2] <= .20,] 
 dim(piRNA_sex) #307
 
-(mod_sex <- model.matrix(~ Sex + as.factor(trimester) + LibraryID, desMat))
+(mod_sex <- model.matrix(~ Sex + as.factor(trimester) + Tech1, desMat))
 dmFit_sex <- lmFit(log10(piRNA_sex + 1), mod_sex)
 colnames(coef(dmFit_sex))
 ebFit_sex<-eBayes(dmFit_sex)
@@ -537,3 +725,8 @@ abline(h=3.07,col="red")
 
 
 	
+hist(log10(Exp1 +1), breaks = 100)
+summary(piRNA.Exp)
+
+
+
